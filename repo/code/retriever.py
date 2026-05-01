@@ -20,7 +20,7 @@ from rank_bm25 import BM25Okapi
 
 from llm import chat_json, embed
 from schemas import WikiHit
-from wiki import parse_frontmatter
+from wiki import heuristic_risk, parse_frontmatter
 
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]+")
 _WIKI_ROOT_DEFAULT = Path("wiki")
@@ -40,32 +40,74 @@ class WikiRetriever:
 
     def _load(self) -> None:
         if not self.root.exists():
-            return
-        for domain_dir in sorted(self.root.iterdir()):
-            if not domain_dir.is_dir():
-                continue
-            for md in domain_dir.glob("*.md"):
-                if md.name == "index.md":
+            self._load_raw_fallback()
+        else:
+            for domain_dir in sorted(self.root.iterdir()):
+                if not domain_dir.is_dir():
                     continue
-                text = md.read_text(encoding="utf-8", errors="ignore")
-                fm, body = parse_frontmatter(text)
-                self.pages.append(
-                    {
-                        "path": md.relative_to(self.root).as_posix(),
-                        "domain": fm.get("domain", domain_dir.name),
-                        "title": fm.get("title", md.stem),
-                        "source_path": fm.get("source_path", ""),
-                        "source_url": fm.get("source_url", ""),
-                        "escalation_risk": fm.get("escalation_risk", "low"),
-                        "product_area": fm.get("product_area", ""),
-                        "topic_tags": _parse_list(fm.get("topic_tags", "[]")),
-                        "body": body,
-                        "abs_path": md,
-                    }
-                )
+                for md in domain_dir.glob("*.md"):
+                    if md.name == "index.md":
+                        continue
+                    text = md.read_text(encoding="utf-8", errors="ignore")
+                    fm, body = parse_frontmatter(text)
+                    self.pages.append(
+                        {
+                            "path": md.relative_to(self.root).as_posix(),
+                            "domain": fm.get("domain", domain_dir.name),
+                            "title": fm.get("title", md.stem),
+                            "source_path": fm.get("source_path", ""),
+                            "source_url": fm.get("source_url", ""),
+                            "escalation_risk": fm.get("escalation_risk", "low"),
+                            "product_area": fm.get("product_area", ""),
+                            "topic_tags": _parse_list(fm.get("topic_tags", "[]")),
+                            "body": body,
+                            "abs_path": md,
+                        }
+                    )
+            self._load_raw_fallback()
         if self.pages:
             corpus = [_tokenize(p["title"] + " " + p["body"]) for p in self.pages]
             self.bm25 = BM25Okapi(corpus)
+
+    def _load_raw_fallback(self) -> None:
+        """Add raw corpus pages not yet represented in the generated wiki.
+
+        This keeps batch triage usable while the long LLM Wiki ingest is still
+        running. Wiki pages remain preferred because they are loaded first and
+        can be selected through index.md; raw pages only backstop BM25 search.
+        """
+        raw_root = self.root.parent / "data"
+        if not raw_root.exists():
+            return
+        represented = {p.get("source_path") for p in self.pages if p.get("source_path")}
+        for domain in ("hackerrank", "claude", "visa"):
+            droot = raw_root / domain
+            if not droot.exists():
+                continue
+            for md in droot.rglob("*.md"):
+                if md.name == "index.md" and md.parent == droot:
+                    continue
+                rel_src = md.relative_to(raw_root.parent).as_posix()
+                if rel_src in represented:
+                    continue
+                text = md.read_text(encoding="utf-8", errors="ignore")
+                fm, body = parse_frontmatter(text)
+                title = fm.get("title") or md.stem.replace("-", " ").title()
+                area = _area_from_path(md, droot)
+                self.pages.append(
+                    {
+                        "path": f"raw/{rel_src}",
+                        "domain": domain,
+                        "title": title,
+                        "source_path": rel_src,
+                        "source_url": fm.get("source_url") or fm.get("final_url", ""),
+                        "escalation_risk": heuristic_risk(text, rel_src),
+                        "product_area": area,
+                        "topic_tags": [],
+                        "body": body or text,
+                        "abs_path": md,
+                    }
+                )
 
     def index_text(self, domain: str) -> str:
         idx = self.root / domain / "index.md"
@@ -117,19 +159,22 @@ class WikiRetriever:
     def embed_rerank(self, query: str, candidates: list[WikiHit], k: int = 3) -> list[WikiHit]:
         if not candidates:
             return []
-        q_emb = np.array(embed(query)[0])
-        hit_texts = []
-        for h in candidates:
-            page = next((p for p in self.pages if p["path"] == h.path), None)
-            hit_texts.append((page["title"] + "\n" + page["body"][:1500]) if page else h.title)
-        page_embs = np.array(embed(hit_texts))
-        sims = page_embs @ q_emb / (
-            np.linalg.norm(page_embs, axis=1) * np.linalg.norm(q_emb) + 1e-9
-        )
-        order = np.argsort(sims)[::-1][:k]
-        return [
-            candidates[i].model_copy(update={"score": float(sims[i])}) for i in order
-        ]
+        try:
+            q_emb = np.array(embed(query)[0])
+            hit_texts = []
+            for h in candidates:
+                page = next((p for p in self.pages if p["path"] == h.path), None)
+                hit_texts.append((page["title"] + "\n" + page["body"][:1500]) if page else h.title)
+            page_embs = np.array(embed(hit_texts))
+            sims = page_embs @ q_emb / (
+                np.linalg.norm(page_embs, axis=1) * np.linalg.norm(q_emb) + 1e-9
+            )
+            order = np.argsort(sims)[::-1][:k]
+            return [
+                candidates[i].model_copy(update={"score": float(sims[i])}) for i in order
+            ]
+        except Exception:
+            return candidates[:k]
 
     def page_content(self, hit: WikiHit) -> str:
         page = next((p for p in self.pages if p["path"] == hit.path), None)
@@ -157,3 +202,10 @@ def _parse_list(raw: str) -> list[str]:
     except Exception:
         pass
     return [s.strip().strip('"') for s in raw.strip("[]").split(",") if s.strip()]
+
+
+def _area_from_path(md: Path, domain_root: Path) -> str:
+    rel = md.relative_to(domain_root)
+    if len(rel.parts) > 1:
+        return rel.parts[0].replace("-", " ").replace("_", " ").title()
+    return "General"

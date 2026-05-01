@@ -1,31 +1,15 @@
-"""5-signal escalation policy.
-
-Signals:
-  - Retrieval confidence (max hit score below threshold -> escalate)
-  - Topic risk (any high-risk tag fires)
-  - PII present
-  - Sentiment / threat language (legal, regulator, sue, lawsuit, refund now)
-  - Urgency (P0/P1)
-
-Hard rules: any high-risk topic OR PII -> escalate.
-Otherwise weighted vote.
-"""
+"""Escalation policy for support-ticket triage."""
 from __future__ import annotations
 
 import re
 
-from schemas import AgentState, Classification, EscalationDecision, WikiHit
+from schemas import Classification, EscalationDecision, WikiHit
 
-HIGH_RISK_TAGS = {
-    "fraud",
-    "lost_card",
-    "dispute",
-    "chargeback",
+HARD_ESCALATION_TAGS = {
     "account_compromise",
     "legal",
     "exam_integrity",
     "payment_failure",
-    "pii",
 }
 
 THREAT_RE = re.compile(
@@ -38,7 +22,7 @@ URGENT_RE = re.compile(
     r"site\s+is\s+down|cannot\s+access|locked\s+out|production\s+down)\b",
     re.I,
 )
-RETRIEVAL_THRESHOLD = 0.25  # below this, escalate (no grounded answer)
+RETRIEVAL_THRESHOLD = 0.25
 
 
 def decide(
@@ -52,24 +36,32 @@ def decide(
     reasons: list[str] = []
     score = 0.0
 
-    # Hard rule 1: PII present
-    if pii_flag or classification.is_pii:
-        reasons.append("PII detected — never echo and never auto-resolve")
-        return EscalationDecision(status="Escalated", score=1.0, reasons=reasons)
+    if classification.request_type == "invalid":
+        return EscalationDecision(
+            status="replied",
+            score=0.0,
+            reasons=["Invalid/out-of-scope reply"],
+        )
 
-    # Hard rule 2: high-risk topic
-    risk_hit = [t for t in classification.risk_tags if t in HIGH_RISK_TAGS]
+    if pii_flag:
+        return EscalationDecision(
+            status="escalated",
+            score=1.0,
+            reasons=["PII detected - never echo and never auto-resolve"],
+        )
+
+    risk_hit = [t for t in classification.risk_tags if t in HARD_ESCALATION_TAGS]
     if risk_hit:
-        reasons.append(f"High-risk tag(s): {', '.join(risk_hit)}")
-        return EscalationDecision(status="Escalated", score=1.0, reasons=reasons)
+        return EscalationDecision(
+            status="escalated",
+            score=1.0,
+            reasons=[f"High-risk tag(s): {', '.join(risk_hit)}"],
+        )
 
-    # Hard rule 3: any retrieved page tagged high risk
     high_pages = [h for h in hits if h.escalation_risk == "high"]
     if high_pages:
-        reasons.append(f"Retrieved page tagged high-risk: {high_pages[0].path}")
-        return EscalationDecision(status="Escalated", score=1.0, reasons=reasons)
+        reasons.append(f"High-risk source consulted: {high_pages[0].path}")
 
-    # Soft signals
     if hits:
         top_score = max(h.score for h in hits)
         if top_score < RETRIEVAL_THRESHOLD:
@@ -84,18 +76,17 @@ def decide(
         reasons.append("Threat / legal language present")
 
     if URGENT_RE.search(raw_issue):
-        score += 0.2
+        score += 0.6 if classification.request_type == "bug" else 0.2
         reasons.append("High urgency language")
 
     if injection_flag:
-        # injection alone doesn't trigger escalate; we reply with refusal in invalid path
-        reasons.append("Prompt injection pattern detected (handled as invalid)")
-
-    if classification.request_type == "invalid":
-        # invalid does NOT escalate — replies with polite refusal
-        return EscalationDecision(status="Replied", score=score, reasons=reasons or ["Invalid/out-of-scope reply"])
+        reasons.append("Prompt injection pattern detected")
 
     if score >= 0.5:
-        return EscalationDecision(status="Escalated", score=score, reasons=reasons)
+        return EscalationDecision(status="escalated", score=score, reasons=reasons)
 
-    return EscalationDecision(status="Replied", score=score, reasons=reasons or ["No escalation signals fired"])
+    return EscalationDecision(
+        status="replied",
+        score=score,
+        reasons=reasons or ["No escalation signals fired"],
+    )

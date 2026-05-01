@@ -6,6 +6,7 @@ Pipeline:
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,7 @@ from safety import sanitize
 from schemas import AgentState, TicketIn, TicketOut
 
 _RETRIEVER: Optional[WikiRetriever] = None
+DOMAINS = ("HackerRank", "Claude", "Visa")
 
 
 def get_retriever(wiki_root: Path = Path("wiki")) -> WikiRetriever:
@@ -37,18 +39,19 @@ def process_ticket(ticket: TicketIn, wiki_root: Path = Path("wiki")) -> TicketOu
     # 2. Classify
     state.classification = classify(cleaned, ticket.subject, ticket.company)
 
-    # 3. Route domain (if company=None, infer)
+    # 3. Route domain
     company = ticket.company
-    if company == "None":
-        company = infer_domain(cleaned, ticket.subject)  # type: ignore[assignment]
 
     # 4. Retrieve from wiki
-    hits = []
-    if company in ("HackerRank", "Claude", "Visa"):
-        hits = retr.lookup_via_index(cleaned, company.lower())
-    if not hits:
-        bm = retr.bm25_search(cleaned, domain=(company.lower() if company != "None" else None), k=8)
-        hits = retr.embed_rerank(cleaned, bm, k=3) if bm else []
+    if company == "None":
+        hits = _retrieve_cross_domain(retr, cleaned)
+        if hits:
+            company = _company_from_domain(hits[0].domain)  # type: ignore[assignment]
+        else:
+            company = infer_domain(cleaned, ticket.subject)  # type: ignore[assignment]
+            hits = _retrieve_domain(retr, cleaned, company) if company != "None" else []
+    else:
+        hits = _retrieve_domain(retr, cleaned, company)
     state.hits = hits
     state.page_contents = [retr.page_content(h) for h in hits]
 
@@ -64,7 +67,7 @@ def process_ticket(ticket: TicketIn, wiki_root: Path = Path("wiki")) -> TicketOu
     state.escalation = decision
 
     # 6. Generate response
-    if decision.status == "Escalated":
+    if decision.status == "escalated":
         state.response = ESCALATE_REPLY
     elif state.classification.request_type == "invalid":
         state.response = (
@@ -90,6 +93,7 @@ def process_ticket(ticket: TicketIn, wiki_root: Path = Path("wiki")) -> TicketOu
         product_area=state.classification.product_area or _fallback_area(hits),
         status=decision.status,
         request_type=state.classification.request_type,
+        justification=state.justification,
     )
     return state.final
 
@@ -98,3 +102,51 @@ def _fallback_area(hits: list) -> str:
     if hits and hits[0].title:
         return hits[0].title
     return "General"
+
+
+def _retrieve_domain(retr: WikiRetriever, query: str, company: str):
+    if company not in DOMAINS:
+        return []
+    bm = retr.bm25_search(query, domain=company.lower(), k=12)
+    hits = retr.embed_rerank(query, bm, k=3) if bm else []
+    return hits or retr.lookup_via_index(query, company.lower())
+
+
+def _retrieve_cross_domain(retr: WikiRetriever, query: str):
+    candidates = retr.bm25_search(query, domain=None, k=24)
+    if not candidates:
+        for company in DOMAINS:
+            candidates.extend(retr.lookup_via_index(query, company.lower(), k=2))
+
+    dedup = {}
+    for hit in candidates:
+        existing = dedup.get(hit.path)
+        if existing is None or hit.score > existing.score:
+            dedup[hit.path] = hit
+    pooled = list(dedup.values())
+    pooled.sort(key=lambda h: _domain_hint(query, h.domain) + h.score * 0.01, reverse=True)
+    ranked = retr.embed_rerank(query, pooled, k=5) if pooled else []
+    ranked.sort(key=lambda h: _domain_hint(query, h.domain) + h.score * 0.01, reverse=True)
+    return ranked[:3]
+
+
+def _company_from_domain(domain: str) -> str:
+    d = domain.lower()
+    if d == "hackerrank":
+        return "HackerRank"
+    if d == "claude":
+        return "Claude"
+    if d == "visa":
+        return "Visa"
+    return "None"
+
+
+def _domain_hint(query: str, domain: str) -> float:
+    text = query.lower()
+    d = domain.lower()
+    patterns = {
+        "visa": r"\b(visa|card|merchant|atm|fraud|dispute|chargeback|transaction)\b",
+        "claude": r"\b(claude|anthropic|workspace|seat|mcp|project|opus|sonnet|api)\b",
+        "hackerrank": r"\b(hackerrank|test|candidate|assessment|proctor|recruiter|interview)\b",
+    }
+    return 2.0 if re.search(patterns.get(d, r"$^"), text) else 0.0

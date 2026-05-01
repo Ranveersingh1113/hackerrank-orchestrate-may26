@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
 
@@ -64,6 +65,30 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             k, v = line.split(":", 1)
             fm[k.strip()] = v.strip().strip('"').strip("'")
     return fm, body
+
+
+def _as_text(value) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(x) for x in value)
+    return str(value or "")
+
+
+def _as_list(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(x) for x in value]
+    if not value:
+        return []
+    return [s.strip().strip('"') for s in str(value).strip("[]").split(",") if s.strip()]
+
+
+def _normalize_page(page: dict) -> dict:
+    page = dict(page)
+    page["title"] = _as_text(page.get("title")) or "Untitled"
+    page["product_area"] = _as_text(page.get("product_area")) or "General"
+    risk = _as_text(page.get("escalation_risk")).lower()
+    page["escalation_risk"] = risk if risk in ("low", "medium", "high") else "low"
+    page["topic_tags"] = _as_list(page.get("topic_tags"))
+    return page
 
 
 def heuristic_risk(text: str, source_path: str) -> str:
@@ -153,6 +178,7 @@ Output JSON only. No prose. No markdown fences.
 
 
 def render_wiki_page(page: dict) -> str:
+    page = _normalize_page(page)
     fm_lines = [
         "---",
         f'title: "{page["title"]}"',
@@ -180,6 +206,7 @@ def render_wiki_page(page: dict) -> str:
 
 
 def render_index(domain: str, pages: list[dict]) -> str:
+    pages = [_normalize_page(p) for p in pages]
     lines = [
         f"# {domain.capitalize()} Support — Wiki Index",
         "",
@@ -189,7 +216,7 @@ def render_index(domain: str, pages: list[dict]) -> str:
         "|------|--------------|------|------|",
     ]
     for p in sorted(pages, key=lambda x: (x["escalation_risk"] != "high", x["product_area"], x["title"])):
-        slug = slugify(p["title"])
+        slug = p.get("_slug") or slugify(p["title"])
         risk = p["escalation_risk"]
         risk_badge = {"high": "🔴 high", "medium": "🟡 med", "low": "🟢 low"}[risk]
         tags = ", ".join(p["topic_tags"][:5])
@@ -198,46 +225,85 @@ def render_index(domain: str, pages: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_wiki(raw_root: Path, out_root: Path, force: bool = False) -> None:
+def _cache_file(out_dir: Path, cached: dict) -> Path:
+    return out_dir / f"{cached.get('slug', 'x')}.md"
+
+
+def _build_pending(domain: str, src_path: Path, raw_root: Path) -> tuple[str, str, str, dict]:
+    h = file_hash(src_path)
+    rel = src_path.relative_to(raw_root.parent).as_posix()
+    page = build_wiki_page(domain, src_path, raw_root)
+    return domain, rel, h, page
+
+
+def _write_page(out_root: Path, cache: dict, domain: str, rel: str, h: str, page: dict) -> dict:
+    out_dir = out_root / domain
+    out_dir.mkdir(parents=True, exist_ok=True)
+    page = _normalize_page(page)
+    slug = cache.get(rel, {}).get("slug") or slugify(page["title"])
+    candidate = slug
+    i = 1
+    while (out_dir / f"{candidate}.md").exists() and cache.get(rel, {}).get("slug") != candidate:
+        i += 1
+        candidate = f"{slug}-{i}"
+    slug = candidate
+
+    page_with_slug = dict(page)
+    page_with_slug["_slug"] = slug
+    (out_dir / f"{slug}.md").write_text(render_wiki_page(page), encoding="utf-8")
+    cache[rel] = {"hash": h, "slug": slug, "page": page}
+    return page_with_slug
+
+
+def build_wiki(raw_root: Path, out_root: Path, force: bool = False, workers: int = 4) -> None:
     out_root.mkdir(parents=True, exist_ok=True)
     cache_path = out_root / ".cache.json"
     cache: dict = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
 
     pages_by_domain: dict[str, list[dict]] = {d: [] for d in DOMAINS}
-    items = list(iter_corpus(raw_root))
+    items = sorted(
+        iter_corpus(raw_root),
+        key=lambda item: item[1].relative_to(raw_root.parent).as_posix(),
+    )
     print(f"[wiki] {len(items)} corpus articles found")
 
-    for domain, src_path in tqdm(items, desc="Ingesting"):
+    pending: list[tuple[str, Path]] = []
+    for domain, src_path in tqdm(items, desc="Checking cache"):
         h = file_hash(src_path)
         rel = src_path.relative_to(raw_root.parent).as_posix()
         cached = cache.get(rel)
         out_dir = out_root / domain
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        if cached and cached.get("hash") == h and not force and (out_dir / cached.get("slug", "x") + ".md").exists():
-            pages_by_domain[domain].append(cached["page"])
+        if cached and cached.get("hash") == h and not force and _cache_file(out_dir, cached).exists():
+            page = _normalize_page(cached["page"])
+            page["_slug"] = cached.get("slug") or slugify(page["title"])
+            pages_by_domain[domain].append(page)
             continue
 
-        try:
-            page = build_wiki_page(domain, src_path, raw_root)
-        except Exception as e:
-            import traceback as _tb
-            print(f"[wiki] ERROR {rel}: {type(e).__name__}: {e}")
-            _tb.print_exc()
-            continue
+        pending.append((domain, src_path))
 
-        slug = slugify(page["title"])
-        # Disambiguate collisions
-        candidate = slug
-        i = 1
-        while (out_dir / f"{candidate}.md").exists() and cache.get(rel, {}).get("slug") != candidate:
-            i += 1
-            candidate = f"{slug}-{i}"
-        slug = candidate
+    print(f"[wiki] {len(pending)} articles need extraction; workers={workers}")
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = {
+            executor.submit(_build_pending, domain, src_path, raw_root): (
+                domain,
+                src_path.relative_to(raw_root.parent).as_posix(),
+            )
+            for domain, src_path in pending
+        }
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Ingesting"):
+            domain, rel = futures[future]
+            try:
+                domain, rel, h, page = future.result()
+                page_with_slug = _write_page(out_root, cache, domain, rel, h, page)
+                pages_by_domain[domain].append(page_with_slug)
+                cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+            except Exception as e:
+                import traceback as _tb
 
-        (out_dir / f"{slug}.md").write_text(render_wiki_page(page), encoding="utf-8")
-        cache[rel] = {"hash": h, "slug": slug, "page": page}
-        pages_by_domain[domain].append(page)
+                print(f"[wiki] ERROR {rel}: {type(e).__name__}: {e}")
+                _tb.print_exc()
 
     cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
 
@@ -255,4 +321,5 @@ if __name__ == "__main__":
 
     raw = Path(sys.argv[1] if len(sys.argv) > 1 else "data")
     out = Path(sys.argv[2] if len(sys.argv) > 2 else "wiki")
-    build_wiki(raw, out)
+    workers = int(sys.argv[3]) if len(sys.argv) > 3 else 4
+    build_wiki(raw, out, workers=workers)

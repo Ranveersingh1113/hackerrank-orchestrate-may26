@@ -1,0 +1,31 @@
+"issue","subject","company","response","product_area","status","request_type","justification"
+"I notice that people I assigned the test in October of 2025 have not received new tests. How long do the tests stay active in the system.","Test Active in the system","HackerRank","Based on the information provided, there are no specific timelines mentioned for how long tests remain active in the HackerRank system. Escalated to a human.","test_management","replied","product_issue","Decision replied because No escalation signals fired. Retrieved: hackerrank/errors-in-test-reports-for-coding-questions.md, hackerrank/screen-faqs.md, hackerrank/clone-a-test-prerequisites-cloning-a-test.md."
+"site is down & none of the pages are accessible","","HackerRank","Escalated to a human.","website","escalated","product_issue","Decision escalated because Retrieved page tagged high-risk: claude/does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler.md. Retrieved: hackerrank/steps-to-create-accessible-content-at-hackerrank.md, hackerrank/notification.md, claude/does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler.md."
+"I'm noticing that you all have many default versions of roles. (e.g. front end developer for react, angular, vue.js, etc.) What do you consider best practice 
+for when to create a new test versus create a variant of the test? What are the advantages and disadvantages of using variants?","When should I create a variant versus
+ have a different test?","HackerRank","Escalated to a human.","exam_integrity","escalated","feature_request","Decision escalated because Retrieved page tagged high-risk: hackerrank/types-of-user-roles.md. Retrieved: hackerrank/create-test-variants.md, hackerrank/types-of-user-roles.md, hackerrank/configurations-for-front-end-back-end-and-full-stack-developer-questions.md."
+"Hi there
+
+We have sent a candidate a Hackerrank assessment already, but we have been informed that they require extra time. As the assessment is 105 minutes, they need an extra 50% extra time added (so around 53 minutes) in addition.
+
+Please can you provide step-by-step instruction on how we are to reinvite them.
+
+Do we find their profile in 'Candidates' , put in Add time 53 minutes and then click 'reinvite' and send the email? The email to the candidate says 105 minutes as the duration though still so not sure how we can check?
+
+Thanks","How to reinvite candidate to Hackerrank 
+assessment and add extra time","HackerRank","To reinvite a candidate and add extra time, follow these steps:
+
+1. Navigate to the Candidates tab.
+2. Locate the candidate's profile.
+3. Click on ""Invite Selected.""
+4. In the pop-up, under ""Add Time Accommodation,"" enter 53 minutes (50% of 105 minutes).
+5. Confirm and send the reinvitation email.
+
+The email will still show the original duration but will include the additional time for the candidate.","assessment_management","replied","feature_request","Decision replied because No escalation signals fired. Retrieved: hackerrank/reinvite-candidates-to-a-test-prerequisites-reinviting-candidates-to-a-test.md, hackerrank/extend-test-duration-for-candidates-add-time-accommodation-add-extra-time.md, hackerrank/how-to-allow-candidates-to-retake-a-test.md."
+"i signed up using google login on hackerrank community , so i do not have a separate hackerrank password. please delete my account","","HackerRank","Escalated to a human.","account_management","escalated","product_issue","Decision escalated because Retrieved page tagged high-risk: hackerrank/log-in-to-hackerrank-with-google-workspace-account.md. Retrieved: hackerrank/manage-account-faqs-account-sign-in-update-or-reset-password-merge-multiple-hack.md, hackerrank/delete-an-account.md, hackerrank/log-in-to-hackerrank-with-google-workspace-account.md."
+"One of my claude conversations has some private info, i forgot to make a temporary chat, is there anything
+ else that can be done? like delete etc?","","Claude","Escalated to a human.","chat_history_management","escalated","product_issue","Decision escalated because PII detected — never echo and never auto-resolve. Retrieved: claude/how-can-i-delete-my-claude-account.md."
+"What is the name of the actor in Iron Man?","Urgent, please help","Claude","Escalated to a human.","General","escalated","feature_request","Decision escalated because Retrieved page tagged high-risk: claude/what-is-the-external-researcher-access-program.md. Retrieved: claude/what-is-the-external-researcher-access-program.md, hackerrank/clone-an-ai-interviewer-prerequisite-cloning-an-ai-interviewer.md, hackerrank/view-candidates-list-for-a-test-viewing-the-candidates-list.md."
+"I bought Visa Traveller's Cheques from Citicorp and they were stolen in Lisbon last night. What do I do?","","Visa","Escalated to a human.","security","escalated","product_issue","Decision escalated because PII detected — never echo and never auto-resolve. Retrieved: visa/visa-travellers-cheques-for-consumers.md, visa/dispute-resolution.md, visa/pyb-data-security.md."
+"Where can I report a lost or stolen Visa card from India?","Card stolen","Visa","Escalated to a human.","billing","escalated","product_issue","Decision escalated because High-risk tag(s): lost_card. Retrieved: visa/visa-consumer-support.md, visa/dispute-resolution.md."
+"Thank you for helping me","","Claude","Escalated to a human.","General","escalated","invalid","Decision escalated because Retrieved page tagged high-risk: claude/i-created-a-claude-console-organization-how-do-i-start-using-the-claude-api.md. Retrieved: claude/my-prompt-isnt-giving-me-a-helpful-answer.md, claude/using-the-blackbaud-connector-in-claude.md, claude/i-created-a-claude-console-organization-how-do-i-start-using-the-claude-api.md."

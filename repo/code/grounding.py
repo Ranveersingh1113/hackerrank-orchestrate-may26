@@ -29,7 +29,7 @@ ISSUE: {issue}
 
 Reply:"""
 
-ESCALATE_REPLY = "Escalate to a human"
+ESCALATE_REPLY = "Escalated to a human."
 
 JUSTIFY_PROMPT = """In 1-2 sentences, explain why the agent {decision} this ticket.
 Cite specific signals: risk tags, retrieved wiki paths, retrieval confidence, or PII detection.
@@ -65,7 +65,10 @@ def generate_response(
         company=company,
         issue=issue[:2000],
     )
-    text = chat([{"role": "user", "content": prompt}], fast=False, temperature=0.0).strip()
+    try:
+        text = chat([{"role": "user", "content": prompt}], fast=False, temperature=0.0).strip()
+    except Exception:
+        text = _extractive_reply(company, hits, page_contents)
     return text or ESCALATE_REPLY
 
 
@@ -75,11 +78,28 @@ def generate_justification(
     hits: list[WikiHit],
     issue: str,
 ) -> str:
-    paths = [h.path for h in hits] or ["(none)"]
-    prompt = JUSTIFY_PROMPT.format(
-        decision=decision.lower(),
-        reasons="; ".join(reasons) or "n/a",
-        paths=", ".join(paths),
-        ticket=issue[:600],
+    return _fallback_justification(decision, reasons, hits)
+
+
+def _extractive_reply(company: str, hits: list[WikiHit], page_contents: list[str]) -> str:
+    if not hits or not page_contents:
+        return ESCALATE_REPLY
+    lines = []
+    for line in page_contents[0].splitlines():
+        clean = line.strip(" -*\t")
+        if 40 <= len(clean) <= 220 and not clean.lower().startswith(("#", "source:")):
+            lines.append(clean)
+        if len(lines) == 3:
+            break
+    if not lines:
+        return ESCALATE_REPLY
+    return (
+        f"Based on the {company} support article '{hits[0].title}', "
+        + " ".join(lines)
     )
-    return chat([{"role": "user", "content": prompt}], fast=True, temperature=0.0).strip()
+
+
+def _fallback_justification(decision: str, reasons: list[str], hits: list[WikiHit]) -> str:
+    paths = ", ".join(h.path for h in hits[:3]) or "no retrieved page"
+    reason = "; ".join(reasons) or "no escalation signals fired"
+    return f"Decision {decision} because {reason}. Retrieved: {paths}."

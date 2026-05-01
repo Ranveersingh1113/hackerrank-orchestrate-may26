@@ -5,7 +5,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 Domain = Literal["HackerRank", "Claude", "Visa", "None"]
-Status = Literal["Replied", "Escalated"]
+Status = Literal["replied", "escalated"]
 RequestType = Literal["product_issue", "feature_request", "bug", "invalid"]
 
 
@@ -23,6 +23,7 @@ class TicketOut(BaseModel):
     product_area: str
     status: Status
     request_type: RequestType
+    justification: str
 
 
 class WikiHit(BaseModel):
