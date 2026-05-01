@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh repo *)",
+      "Bash(gh api *)",
+      "Bash(python3 -c \"import sys,json; [print\\(f['name']\\) for f in json.load\\(sys.stdin\\)]\")",
+      "Bash(node -e \"let d=''; process.stdin.on\\('data',c=>d+=c\\); process.stdin.on\\('end',\\(\\)=>JSON.parse\\(d\\).forEach\\(f=>console.log\\(f.name\\)\\)\\)\")",
+      "Bash(node -e \"let d=''; process.stdin.on\\('data',c=>d+=c\\); process.stdin.on\\('end',\\(\\)=>{const f=JSON.parse\\(d\\);console.log\\(Buffer.from\\(f.content,'base64'\\).toString\\(\\)\\)}\\)\")",
+      "Bash(node -e \"let d=''; process.stdin.on\\('data',c=>d+=c\\); process.stdin.on\\('end',\\(\\)=>console.log\\(Buffer.from\\(d.trim\\(\\),'base64'\\).toString\\(\\)\\)\\)\")",
+      "Read(//c/Users/ricky/.claude/**)",
+      "Bash(xargs grep *)",
+      "Bash(node -e \"let d=''; process.stdin.on\\('data',c=>d+=c\\); process.stdin.on\\('end',\\(\\)=>JSON.parse\\(d\\).forEach\\(f=>console.log\\(f.type, f.name\\)\\)\\)\")",
+      "Bash(npm install *)",
+      "Bash(npm config *)",
+      "Bash(npm root *)",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\);process.stdin.on\\('end',\\(\\)=>{const p=JSON.parse\\(d\\);console.log\\('bin:',JSON.stringify\\(p.bin\\)\\)}\\)\")",
+      "Bash(ollama list *)",
+      "Bash(git clone *)",
+      "PowerShell(if \\(Test-Path \"$env:USERPROFILE\\\\hackerrank_orchestrate\\\\log.txt\"\\) { Write-Output \"EXISTS\"; Get-Content \"$env:USERPROFILE\\\\hackerrank_orchestrate\\\\log.txt\" } else { Write-Output \"MISSING\" })",
+      "PowerShell($now = Get-Date; $end = [datetime]::ParseExact\\(\"2026-05-02 11:00:00 +05:30\",\"yyyy-MM-dd HH:mm:ss zzz\",$null\\); $remaining = $end - $now.ToUniversalTime\\(\\).AddHours\\(5.5\\); Write-Output \"NowIST: $\\($now.ToUniversalTime\\(\\).AddHours\\(5.5\\).ToString\\('yyyy-MM-ddTHH:mm:ss+05:30'\\)\\)\"; Write-Output \"Remaining: $\\([int]$remaining.TotalDays\\)d $\\($remaining.Hours\\)h $\\($remaining.Minutes\\)m\")",
+      "PowerShell(Get-Date -Format \"yyyy-MM-ddTHH:mm:sszzz\"; [System.TimeZoneInfo]::Local.Id)",
+      "PowerShell(ollama serve 2>&1)",
+      "PowerShell(ollama --version)",
+      "PowerShell(ollama pull qwen2.5:7b-instruct-q4_K_M)",
+      "PowerShell(ollama pull qwen2.5:3b-instruct-q4_K_M)",
+      "PowerShell(ollama pull nomic-embed-text)",
+      "PowerShell(ollama list)",
+      "PowerShell(Test-NetConnection -ComputerName 127.0.0.1 -Port 11434 -InformationLevel Quiet -WarningAction SilentlyContinue)",
+      "PowerShell($env:OLLAMA_HOST=\"http://127.0.0.1:11434\"; cd \"d:\\\\OneDrive\\\\Desktop\\\\hackerrank orchestrate\\\\repo\"; .\\\\.venv\\\\Scripts\\\\python.exe code\\\\_smoke.py)"
+    ]
+  }
+}
