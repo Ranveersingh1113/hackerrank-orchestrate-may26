@@ -5,6 +5,8 @@ Tail justification cites the wiki page paths used.
 """
 from __future__ import annotations
 
+import re
+
 from llm import chat
 from schemas import WikiHit
 
@@ -55,9 +57,14 @@ def generate_response(
     company: str,
     hits: list[WikiHit],
     page_contents: list[str],
-) -> str:
+) -> tuple[str, bool]:
+    """Return (response_text, grounded_flag).
+
+    grounded_flag=False signals the caller that the response could not be
+    grounded in the retrieved excerpts and the ticket should be escalated.
+    """
     if not hits:
-        return ESCALATE_REPLY
+        return ESCALATE_REPLY, False
     excerpts = render_excerpts(hits, page_contents)
     prompt = REPLY_PROMPT.format(
         excerpts=excerpts,
@@ -69,7 +76,53 @@ def generate_response(
         text = chat([{"role": "user", "content": prompt}], fast=False, temperature=0.0).strip()
     except Exception:
         text = _extractive_reply(company, hits, page_contents)
-    return text or ESCALATE_REPLY
+    if not text:
+        return ESCALATE_REPLY, False
+    if _is_escalate_signal(text):
+        return ESCALATE_REPLY, False
+    if not _is_grounded(text, page_contents):
+        # Model fell back to parametric knowledge. Try the extractive path.
+        fallback = _extractive_reply(company, hits, page_contents)
+        if fallback != ESCALATE_REPLY and _is_grounded(fallback, page_contents):
+            return fallback, True
+        return ESCALATE_REPLY, False
+    return text, True
+
+
+_ESCALATE_RE = re.compile(r"\bescalat(e|ed|ing)\s+to\s+a?\s*human\b", re.I)
+
+
+def _is_escalate_signal(text: str) -> bool:
+    """The reply prompt instructs the model to emit this exact phrase when the
+    excerpts do not support an answer. We treat any 'escalate to a human' phrasing
+    in a short reply as an escalation marker.
+    """
+    if _ESCALATE_RE.search(text) and len(text) < 120:
+        return True
+    return text.strip() == ESCALATE_REPLY
+
+
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,}")
+
+
+def _is_grounded(reply: str, page_contents: list[str], min_overlap: float = 0.35) -> bool:
+    """Cheap groundedness heuristic: at least `min_overlap` of the content
+    tokens in the reply must also appear somewhere in the retrieved excerpts.
+
+    This is a guardrail against the model inventing steps when retrieval was
+    weak; it is not a substitute for the no-fabrication prompt rule.
+    """
+    if not page_contents:
+        return False
+    reply_tokens = {t.lower() for t in _TOKEN_RE.findall(reply)}
+    if not reply_tokens:
+        return True
+    corpus = " ".join(page_contents).lower()
+    corpus_tokens = set(_TOKEN_RE.findall(corpus))
+    if not corpus_tokens:
+        return False
+    common = reply_tokens & corpus_tokens
+    return (len(common) / max(len(reply_tokens), 1)) >= min_overlap
 
 
 def generate_justification(
@@ -78,7 +131,18 @@ def generate_justification(
     hits: list[WikiHit],
     issue: str,
 ) -> str:
-    return _fallback_justification(decision, reasons, hits)
+    paths = [h.path for h in hits[:3]] or ["(none)"]
+    prompt = JUSTIFY_PROMPT.format(
+        decision=decision,
+        reasons="; ".join(reasons) or "n/a",
+        paths=", ".join(paths),
+        ticket=issue[:600],
+    )
+    try:
+        text = chat([{"role": "user", "content": prompt}], fast=True, temperature=0.0).strip()
+        return _clean_justification(text) or _fallback_justification(decision, reasons, hits)
+    except Exception:
+        return _fallback_justification(decision, reasons, hits)
 
 
 def _extractive_reply(company: str, hits: list[WikiHit], page_contents: list[str]) -> str:
@@ -103,3 +167,13 @@ def _fallback_justification(decision: str, reasons: list[str], hits: list[WikiHi
     paths = ", ".join(h.path for h in hits[:3]) or "no retrieved page"
     reason = "; ".join(reasons) or "no escalation signals fired"
     return f"Decision {decision} because {reason}. Retrieved: {paths}."
+
+
+def _clean_justification(text: str) -> str:
+    cleaned = " ".join(line.strip() for line in text.splitlines() if line.strip())
+    if not cleaned:
+        return ""
+    label_markers = ("DECISION:", "REASONS:", "RETRIEVED:", "TICKET")
+    if any(marker in cleaned.upper() for marker in label_markers):
+        return ""
+    return cleaned[:400]

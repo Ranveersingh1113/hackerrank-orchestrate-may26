@@ -24,6 +24,8 @@ INJECTION_PATTERNS = [
     r"</?\s*system\s*>",
     r"jailbreak",
     r"DAN\s+mode",
+    r"affiche\s+.{0,60}(r[eè]gles?|regles?|documents?|logique)",
+    r"(show|affiche|muestra|zeige)\s+.{0,40}(internal|internes?|interne|intern)\s+(rules?|r[eè]gles?|reglas?|regeln)",
 ]
 INJECTION_RE = re.compile("|".join(INJECTION_PATTERNS), re.I)
 

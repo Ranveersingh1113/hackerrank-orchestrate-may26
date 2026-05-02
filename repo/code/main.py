@@ -31,16 +31,54 @@ def ingest(
 def run(
     csv_in: Path = typer.Option(Path("support_tickets/support_tickets.csv"), "--csv"),
     csv_out: Path = typer.Option(Path("support_tickets/output.csv"), "--out"),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Skip rows already present in csv_out (matched on issue+subject).",
+    ),
 ):
-    """Batch-process tickets CSV."""
+    """Batch-process tickets CSV. Streams each row to disk so a mid-batch crash
+    keeps the partial output. Use --resume to continue from where you left off."""
     from agent import process_ticket
 
     rows = list(_read_tickets(csv_in))
+    done_keys = _load_done_keys(csv_out) if resume and csv_out.exists() else set()
+    if done_keys:
+        console.print(f"[dim]Resume: skipping {len(done_keys)} already-processed rows[/dim]")
+
     out_rows: list[TicketOut] = []
-    for row in track(rows, description="Triaging tickets"):
-        result = process_ticket(row)
-        out_rows.append(result)
-    _write_outputs(csv_out, out_rows)
+    csv_out.parent.mkdir(parents=True, exist_ok=True)
+    fields = _output_fields()
+    # Open in append mode if resuming and file already has the header.
+    write_header = not (resume and csv_out.exists() and done_keys)
+    mode = "a" if resume and csv_out.exists() else "w"
+    with csv_out.open(mode, encoding="utf-8", newline="") as f:
+        w = csv.writer(f, quoting=csv.QUOTE_ALL)
+        if write_header:
+            w.writerow(fields)
+            f.flush()
+        for row in track(rows, description="Triaging tickets"):
+            key = (row.issue.strip(), (row.subject or "").strip())
+            if key in done_keys:
+                continue
+            try:
+                result = process_ticket(row)
+            except Exception as e:  # noqa: BLE001
+                console.print(f"[red]Row failed:[/red] {type(e).__name__}: {e}")
+                # Emit a safe escalate row so the output CSV stays aligned with input.
+                result = TicketOut(
+                    issue=row.issue,
+                    subject=row.subject,
+                    company=row.company,
+                    response="Escalated to a human.",
+                    product_area="General",
+                    status="escalated",
+                    request_type="invalid",
+                    justification=f"Pipeline error: {type(e).__name__}",
+                )
+            out_rows.append(result)
+            w.writerow(_row_values(result))
+            f.flush()
     _summary(out_rows)
 
 
@@ -69,9 +107,8 @@ def _read_tickets(p: Path):
             )
 
 
-def _write_outputs(p: Path, rows: list[TicketOut]) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fields = [
+def _output_fields() -> list[str]:
+    return [
         "issue",
         "subject",
         "company",
@@ -81,20 +118,40 @@ def _write_outputs(p: Path, rows: list[TicketOut]) -> None:
         "request_type",
         "justification",
     ]
+
+
+def _row_values(r: TicketOut) -> list[str]:
+    return [
+        r.issue,
+        r.subject or "",
+        r.company,
+        r.response,
+        r.product_area,
+        r.status,
+        r.request_type,
+        r.justification,
+    ]
+
+
+def _write_outputs(p: Path, rows: list[TicketOut]) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("w", encoding="utf-8", newline="") as f:
         w = csv.writer(f, quoting=csv.QUOTE_ALL)
-        w.writerow(fields)
+        w.writerow(_output_fields())
         for r in rows:
-            w.writerow([
-                r.issue,
-                r.subject or "",
-                r.company,
-                r.response,
-                r.product_area,
-                r.status,
-                r.request_type,
-                r.justification,
-            ])
+            w.writerow(_row_values(r))
+
+
+def _load_done_keys(p: Path) -> set[tuple[str, str]]:
+    """Return (issue, subject) pairs already present in csv_out for --resume."""
+    if not p.exists():
+        return set()
+    out: set[tuple[str, str]] = set()
+    with p.open(encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            out.add(((row.get("issue") or "").strip(), (row.get("subject") or "").strip()))
+    return out
 
 
 def _summary(rows: list[TicketOut]) -> None:

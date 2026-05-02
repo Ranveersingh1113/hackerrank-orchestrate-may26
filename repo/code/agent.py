@@ -44,12 +44,21 @@ def process_ticket(ticket: TicketIn, wiki_root: Path = Path("wiki")) -> TicketOu
 
     # 4. Retrieve from wiki
     if company == "None":
-        hits = _retrieve_cross_domain(retr, cleaned)
-        if hits:
-            company = _company_from_domain(hits[0].domain)  # type: ignore[assignment]
+        # Two-pass: try LLM-based domain inference first (cheap, accurate when
+        # ticket has clear signals), then cross-domain BM25+rerank as a backstop.
+        inferred = infer_domain(cleaned, ticket.subject)
+        if inferred in DOMAINS:
+            company = inferred  # type: ignore[assignment]
+            hits = _retrieve_domain(retr, cleaned, company)
+            if not hits:
+                # Inference was confident but corpus didn't back it; fall back.
+                hits = _retrieve_cross_domain(retr, cleaned)
+                if hits:
+                    company = _company_from_domain(hits[0].domain)  # type: ignore[assignment]
         else:
-            company = infer_domain(cleaned, ticket.subject)  # type: ignore[assignment]
-            hits = _retrieve_domain(retr, cleaned, company) if company != "None" else []
+            hits = _retrieve_cross_domain(retr, cleaned)
+            if hits:
+                company = _company_from_domain(hits[0].domain)  # type: ignore[assignment]
     else:
         hits = _retrieve_domain(retr, cleaned, company)
     state.hits = hits
@@ -76,9 +85,22 @@ def process_ticket(ticket: TicketIn, wiki_root: Path = Path("wiki")) -> TicketOu
             "an official channel for further help."
         )
     else:
-        state.response = generate_response(
+        text, grounded = generate_response(
             cleaned, ticket.subject, company, hits, state.page_contents
         )
+        if not grounded:
+            # Generation could not stay grounded in the retrieved excerpts.
+            # Flip to escalate rather than ship a hallucinated reply.
+            decision = decision.model_copy(
+                update={
+                    "status": "escalated",
+                    "reasons": decision.reasons + ["Response failed groundedness check"],
+                }
+            )
+            state.escalation = decision
+            state.response = ESCALATE_REPLY
+        else:
+            state.response = text
 
     # 7. Justification
     state.justification = generate_justification(
@@ -118,16 +140,28 @@ def _retrieve_cross_domain(retr: WikiRetriever, query: str):
         for company in DOMAINS:
             candidates.extend(retr.lookup_via_index(query, company.lower(), k=2))
 
-    dedup = {}
+    dedup: dict[str, object] = {}
     for hit in candidates:
         existing = dedup.get(hit.path)
-        if existing is None or hit.score > existing.score:
+        if existing is None or hit.score > existing.score:  # type: ignore[union-attr]
             dedup[hit.path] = hit
     pooled = list(dedup.values())
-    pooled.sort(key=lambda h: _domain_hint(query, h.domain) + h.score * 0.01, reverse=True)
-    ranked = retr.embed_rerank(query, pooled, k=5) if pooled else []
-    ranked.sort(key=lambda h: _domain_hint(query, h.domain) + h.score * 0.01, reverse=True)
+    # Pre-rerank pool sort: domain hint as a small nudge (0.15 max) on top of
+    # whatever score we have. This mainly tie-breaks BM25 hits where the same
+    # query maps to multiple domains (e.g. "billing").
+    pooled.sort(key=_pool_key(query), reverse=True)  # type: ignore[arg-type]
+    ranked = retr.embed_rerank(query, pooled, k=5) if pooled else []  # type: ignore[arg-type]
+    # Post-rerank: scores are cosine sims (0..1). Apply a small domain-hint
+    # nudge (0.10 max) so we don't override a clearly stronger semantic match.
+    ranked.sort(key=lambda h: h.score + _domain_hint(query, h.domain, weight=0.10), reverse=True)
     return ranked[:3]
+
+
+def _pool_key(query: str):
+    def key(h):
+        # BM25 raw score can be 0..30+; normalize roughly by /10 then add hint.
+        return min(h.score, 10.0) / 10.0 + _domain_hint(query, h.domain, weight=0.15)
+    return key
 
 
 def _company_from_domain(domain: str) -> str:
@@ -141,7 +175,7 @@ def _company_from_domain(domain: str) -> str:
     return "None"
 
 
-def _domain_hint(query: str, domain: str) -> float:
+def _domain_hint(query: str, domain: str, weight: float = 0.10) -> float:
     text = query.lower()
     d = domain.lower()
     patterns = {
@@ -149,4 +183,4 @@ def _domain_hint(query: str, domain: str) -> float:
         "claude": r"\b(claude|anthropic|workspace|seat|mcp|project|opus|sonnet|api)\b",
         "hackerrank": r"\b(hackerrank|test|candidate|assessment|proctor|recruiter|interview)\b",
     }
-    return 2.0 if re.search(patterns.get(d, r"$^"), text) else 0.0
+    return weight if re.search(patterns.get(d, r"$^"), text) else 0.0

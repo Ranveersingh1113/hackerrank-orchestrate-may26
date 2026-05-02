@@ -26,7 +26,9 @@
       "PowerShell(ollama pull nomic-embed-text)",
       "PowerShell(ollama list)",
       "PowerShell(Test-NetConnection -ComputerName 127.0.0.1 -Port 11434 -InformationLevel Quiet -WarningAction SilentlyContinue)",
-      "PowerShell($env:OLLAMA_HOST=\"http://127.0.0.1:11434\"; cd \"d:\\\\OneDrive\\\\Desktop\\\\hackerrank orchestrate\\\\repo\"; .\\\\.venv\\\\Scripts\\\\python.exe code\\\\_smoke.py)"
+      "PowerShell($env:OLLAMA_HOST=\"http://127.0.0.1:11434\"; cd \"d:\\\\OneDrive\\\\Desktop\\\\hackerrank orchestrate\\\\repo\"; .\\\\.venv\\\\Scripts\\\\python.exe code\\\\_smoke.py)",
+      "Bash(python -c \"import ast,sys; [ast.parse\\(open\\(f\\).read\\(\\)\\) for f in ['agent.py','classifier.py','escalation.py','grounding.py','safety.py','retriever.py','schemas.py','wiki.py','main.py','llm.py','logger.py']]; print\\('all parsed OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c ' *)"
     ]
   }
 }

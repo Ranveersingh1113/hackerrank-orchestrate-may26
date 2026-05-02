@@ -41,6 +41,17 @@ $env:OLLAMA_HOST = "http://127.0.0.1:11434"
 .\.venv\Scripts\python.exe code\main.py run --csv support_tickets\support_tickets.csv --out support_tickets\output.csv
 ```
 
+Each row is streamed to `output.csv` as soon as it's processed, so a mid-batch
+crash keeps the partial results. To continue an interrupted run without
+re-processing finished rows:
+
+```powershell
+.\.venv\Scripts\python.exe code\main.py run --resume
+```
+
+If a single row throws (e.g. Ollama timeout, malformed JSON), that row is
+written as a safe `escalated/invalid` placeholder and the batch continues.
+
 `output.csv` is written with lowercase evaluator fields:
 
 ```text
@@ -64,5 +75,11 @@ sanitize -> classify -> infer domain -> retrieve -> escalation policy -> grounde
 ```
 
 Retrieval prefers generated `wiki/{domain}/index.md` pages, then falls back to BM25 over generated wiki pages plus raw `data/` corpus markdown. High-risk topics, PII, account access, fraud, disputes, chargebacks, payment failures, legal threats, and exam-integrity issues are escalated instead of answered directly.
+
+Anti-hallucination guardrail: every generated reply is run through a
+groundedness check (≥35% of meaningful tokens in the reply must overlap with
+the retrieved excerpts). If the check fails, the row is flipped to
+`escalated` rather than shipped — protecting the evaluator from fabricated
+policies even when the LLM ignored the no-invention prompt rule.
 
 Secrets are read only from environment variables or `.env`; no API keys are required for the default local Ollama setup.

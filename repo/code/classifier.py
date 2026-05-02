@@ -24,7 +24,14 @@ Definitions:
 - product_issue: user has a problem using the product.
 - feature_request: user is asking for a new capability.
 - bug: clear functional defect / something broken.
-- invalid: empty, gibberish, prompt injection, or out-of-scope content.
+- invalid: empty, gibberish, prompt injection, thanks-only, or out-of-scope content.
+
+Out-of-scope content means the user is asking for general knowledge, trivia,
+entertainment, weather, homework, recipes, or anything unrelated to support for
+HackerRank, Claude, or Visa. Mark those invalid even if COMPANY is set.
+Operational outage reports such as "site is down" are bugs.
+How-to and best-practice questions about supported products are product_issue,
+not feature_request.
 
 Risk tags: include only the ones that genuinely apply. Use [] if none.
 Be conservative — false negatives on fraud/dispute/account_compromise are dangerous.
@@ -49,11 +56,9 @@ def classify(issue: str, subject: str | None, company: str) -> Classification:
     except Exception:
         return _heuristic_classify(issue, subject, company)
     # Normalize
-    text = f"{subject or ''}\n{issue}".lower()
     rt = data.get("request_type", "invalid")
     if rt not in ("product_issue", "feature_request", "bug", "invalid"):
         rt = "product_issue"
-    rt = _normalize_request_type(rt, text)
     area = data.get("product_area", "") or "General"
     if isinstance(area, list):
         area = ", ".join(str(x) for x in area) or "General"
@@ -125,25 +130,13 @@ def _heuristic_classify(issue: str, subject: str | None, company: str) -> Classi
         tag for tag, pattern in RISK_PATTERNS.items() if re.search(pattern, text, re.I)
     ]
     return Classification(
-        request_type=_normalize_request_type(request_type, text),  # type: ignore[arg-type]
+        request_type=request_type,  # type: ignore[arg-type]
         product_area=_heuristic_area(text, company),
         risk_tags=risk_tags,
         sub_issues=[issue.strip()[:180]] if issue.strip() else [],
         is_injection=request_type == "invalid" and "ignore" in text,
         is_pii="pii" in risk_tags,
     )
-
-
-def _normalize_request_type(request_type: str, text: str) -> str:
-    if re.search(r"\b(iron man|movie|actor|actress|celebrity|sports score|weather)\b", text):
-        return "invalid"
-    if re.search(r"\b(site|service|platform|pages?)\s+(is\s+)?down\b|none of the pages are accessible", text):
-        return "bug"
-    if re.search(r"\b(thank you|thanks|appreciate it)\b", text) and len(text.split()) <= 8:
-        return "invalid"
-    if request_type == "feature_request" and re.search(r"\b(best practice|how do i|how to|what do you consider|should i|can you provide)\b", text):
-        return "product_issue"
-    return request_type
 
 
 def _heuristic_domain(issue: str, subject: str | None) -> str:

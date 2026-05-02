@@ -10,6 +10,7 @@ HARD_ESCALATION_TAGS = {
     "legal",
     "exam_integrity",
     "payment_failure",
+    "fraud",
 }
 
 THREAT_RE = re.compile(
@@ -22,7 +23,27 @@ URGENT_RE = re.compile(
     r"site\s+is\s+down|cannot\s+access|locked\s+out|production\s+down)\b",
     re.I,
 )
-RETRIEVAL_THRESHOLD = 0.25
+# Threshold against post-rerank cosine similarity (0..1). BM25 raw scores are
+# unbounded and not directly comparable, so we only enforce this floor when the
+# scores look normalized (max <= 1.0), which is the case after embed_rerank().
+RERANK_FLOOR = 0.30
+# BM25-only fallback: very low absolute scores still suggest weak retrieval.
+BM25_WEAK_FLOOR = 1.5
+
+
+def _retrieval_signal(hits: list[WikiHit]) -> tuple[float, str | None]:
+    """Return (escalation_increment, reason_text_or_None) based on hit quality."""
+    if not hits:
+        return 0.6, "No relevant wiki page found"
+    top = max(h.score for h in hits)
+    looks_normalized = all(h.score <= 1.0 for h in hits)
+    if looks_normalized:
+        if top < RERANK_FLOOR:
+            return 0.4, f"Low rerank similarity ({top:.2f})"
+    else:
+        if top < BM25_WEAK_FLOOR:
+            return 0.3, f"Weak BM25 match ({top:.2f})"
+    return 0.0, None
 
 
 def decide(
@@ -61,15 +82,12 @@ def decide(
     high_pages = [h for h in hits if h.escalation_risk == "high"]
     if high_pages:
         reasons.append(f"High-risk source consulted: {high_pages[0].path}")
+        score += 0.35
 
-    if hits:
-        top_score = max(h.score for h in hits)
-        if top_score < RETRIEVAL_THRESHOLD:
-            score += 0.4
-            reasons.append(f"Low retrieval confidence ({top_score:.2f})")
-    else:
-        score += 0.6
-        reasons.append("No relevant wiki page found")
+    delta, reason = _retrieval_signal(hits)
+    score += delta
+    if reason:
+        reasons.append(reason)
 
     if THREAT_RE.search(raw_issue):
         score += 0.4
