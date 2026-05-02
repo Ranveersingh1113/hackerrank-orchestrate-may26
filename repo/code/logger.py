@@ -31,7 +31,5 @@ def append(title: str, *, user_prompt: str, summary: str, actions: list[str], co
         *[f"{k}={v}" for k, v in context.items()],
         "",
     ]
-    log_path().write_text(
-        log_path().read_text(encoding="utf-8") + "\n".join(block) + "\n",
-        encoding="utf-8",
-    )
+    with log_path().open("a", encoding="utf-8") as f:
+        f.write("\n".join(block) + "\n")

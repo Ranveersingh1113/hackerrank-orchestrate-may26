@@ -4,7 +4,110 @@ from __future__ import annotations
 import re
 
 from llm import chat_json
+from safety import has_pii
 from schemas import Classification
+
+# Closed product-area taxonomies per domain. Free-form LLM area output is snapped
+# to the closest match; this keeps `product_area` consistent across rows so the
+# evaluator can score it cleanly.
+AREA_MAP: dict[str, list[str]] = {
+    "hackerrank": [
+        "Assessments",
+        "Proctoring",
+        "Integrations",
+        "Billing",
+        "Account",
+        "Code Repo",
+        "Interviews",
+        "General",
+    ],
+    "claude": [
+        "Usage Limits",
+        "Billing",
+        "Claude Code",
+        "Projects",
+        "MCP",
+        "Account & Login",
+        "Privacy & Data",
+        "General",
+    ],
+    "visa": [
+        "Lost/Stolen Card",
+        "Disputes & Chargebacks",
+        "Fraud",
+        "Card Activation",
+        "Merchant",
+        "ATM & Cash",
+        "Rewards",
+        "General",
+    ],
+}
+
+# Genuine compromise signals — required for `account_compromise` tag to stand.
+# "delete account" / "remove seat" alone are operational, not compromises.
+COMPROMISE_SIGNALS = re.compile(
+    r"\b(hack(ed|ing)?|compromis|stolen|takeover|unauthori[sz]ed|"
+    r"someone\s+else|suspicious\s+(activity|login|access)|breach|"
+    r"phishing|unknown\s+(login|device))\b",
+    re.I,
+)
+
+
+# Synonym hints — keyword(s) in the LLM's free-form area string trigger the
+# canonical bucket. Order matters: earlier entries win on ties.
+AREA_SYNONYMS: dict[str, list[tuple[str, list[str]]]] = {
+    "hackerrank": [
+        ("Proctoring",   ["proctor", "integrity", "plagiar", "cheat", "ai_solv"]),
+        ("Assessments",  ["assess", "test", "exam", "quiz", "screen", "skillup", "challenge"]),
+        ("Interviews",   ["interview", "codepair"]),
+        ("Code Repo",    ["code repo", "code_repo", "repo", "repository"]),
+        ("Integrations", ["integration", "ats", "lever", "greenhouse", "workday", "api", "webhook", "sso"]),
+        ("Billing",      ["bill", "invoice", "subscription", "payment", "refund", "charge", "pricing", "plan"]),
+        ("Account",      ["account", "login", "permission", "role", "admin", "owner", "seat", "user", "team", "workspace"]),
+    ],
+    "claude": [
+        ("Claude Code",      ["claude code", "claude_code", "claudecode", "cli", "code action"]),
+        ("MCP",              ["mcp", "connector", "tool"]),
+        ("Projects",         ["project"]),
+        ("Usage Limits",     ["usage", "limit", "rate", "quota", "throttl", "context"]),
+        ("Billing",          ["bill", "invoice", "subscription", "payment", "refund", "charge", "pricing", "plan", "tax", "vat"]),
+        ("Account & Login",  ["account", "login", "sso", "sign in", "sign-in", "password", "verify"]),
+        ("Privacy & Data",   ["privacy", "data", "personal", "private", "history", "delete", "export", "retention", "pii"]),
+    ],
+    "visa": [
+        ("Lost/Stolen Card",       ["lost", "stolen", "missing card", "report card"]),
+        ("Disputes & Chargebacks", ["dispute", "chargeback", "refund", "reverse"]),
+        ("Fraud",                  ["fraud", "scam", "phishing", "unauthori"]),
+        ("Card Activation",        ["activat", "new card", "issuance", "issue card"]),
+        ("ATM & Cash",             ["atm", "cash", "withdraw"]),
+        ("Merchant",               ["merchant", "acceptance", "pos", "point of sale"]),
+        ("Rewards",                ["reward", "points", "miles", "cashback"]),
+    ],
+}
+
+
+def _snap_area(area: str, company: str) -> str:
+    """Snap a free-form area string to the closed taxonomy for `company`."""
+    domain = (company or "").lower()
+    candidates = AREA_MAP.get(domain, [])
+    if not candidates or not area:
+        return area or "General"
+    area_norm = area.lower().replace("_", " ").replace("-", " ").strip()
+    if not area_norm:
+        return "General"
+
+    # Pass 1: synonym-keyword match (handles cases like "test_management"->Assessments).
+    for canonical, keywords in AREA_SYNONYMS.get(domain, []):
+        for kw in keywords:
+            if kw in area_norm:
+                return canonical
+
+    # Pass 2: direct match against canonical names (case-insensitive).
+    for canonical in candidates:
+        if canonical.lower() == area_norm or canonical.lower() in area_norm:
+            return canonical
+
+    return "General"
 
 CLASSIFY_PROMPT = """You are a support-ticket triage classifier.
 
@@ -65,13 +168,27 @@ def classify(issue: str, subject: str | None, company: str) -> Classification:
     risk_tags = data.get("risk_tags", []) or []
     if not isinstance(risk_tags, list):
         risk_tags = []
+    risk_tags = [str(t) for t in risk_tags]
+
+    # Drop account_compromise unless a genuine compromise signal is present.
+    # qwen2.5:7b over-tags benign account ops ("delete my account", "remove seat")
+    # as compromises; we only keep the tag when ticket text actually hints at
+    # unauthorized access.
+    if "account_compromise" in risk_tags and not COMPROMISE_SIGNALS.search(issue):
+        risk_tags = [t for t in risk_tags if t != "account_compromise"]
+
+    # PII flag is regex ground truth, not LLM guess. The LLM classifier flags
+    # phrases like "private info" / "personal data" as is_pii=True; only actual
+    # detected PII (card numbers, OTPs, government IDs) should escalate.
+    actual_pii = has_pii(issue)
+
     return Classification(
         request_type=rt,  # type: ignore[arg-type]
-        product_area=str(area),
-        risk_tags=[str(t) for t in risk_tags],
+        product_area=_snap_area(str(area), company),
+        risk_tags=risk_tags,
         sub_issues=data.get("sub_issues", []) or [],
         is_injection=bool(data.get("is_injection", False)),
-        is_pii=bool(data.get("is_pii", False)),
+        is_pii=actual_pii,
     )
 
 
@@ -131,11 +248,11 @@ def _heuristic_classify(issue: str, subject: str | None, company: str) -> Classi
     ]
     return Classification(
         request_type=request_type,  # type: ignore[arg-type]
-        product_area=_heuristic_area(text, company),
+        product_area=_snap_area(_heuristic_area(text, company), company),
         risk_tags=risk_tags,
         sub_issues=[issue.strip()[:180]] if issue.strip() else [],
         is_injection=request_type == "invalid" and "ignore" in text,
-        is_pii="pii" in risk_tags,
+        is_pii=has_pii(issue),
     )
 
 

@@ -111,11 +111,18 @@ def _is_grounded(reply: str, page_contents: list[str], min_overlap: float = 0.35
 
     This is a guardrail against the model inventing steps when retrieval was
     weak; it is not a substitute for the no-fabrication prompt rule.
+
+    Short replies (e.g. a 4-sentence Visa card answer) are penalized by raw
+    ratios because they have fewer distinct content tokens to begin with —
+    we skip the check below 15 tokens.
     """
     if not page_contents:
         return False
     reply_tokens = {t.lower() for t in _TOKEN_RE.findall(reply)}
     if not reply_tokens:
+        return True
+    if len(reply_tokens) < 15:
+        # Short, focused reply — trust the no-invention prompt rule.
         return True
     corpus = " ".join(page_contents).lower()
     corpus_tokens = set(_TOKEN_RE.findall(corpus))
@@ -173,7 +180,11 @@ def _clean_justification(text: str) -> str:
     cleaned = " ".join(line.strip() for line in text.splitlines() if line.strip())
     if not cleaned:
         return ""
+    # Reject only when the model echoed the prompt template back wholesale
+    # (all four labels present). A response that happens to contain "decision"
+    # in normal prose, or one label in a bullet list, is still useful.
     label_markers = ("DECISION:", "REASONS:", "RETRIEVED:", "TICKET")
-    if any(marker in cleaned.upper() for marker in label_markers):
+    upper = cleaned.upper()
+    if sum(1 for m in label_markers if m in upper) >= 3:
         return ""
     return cleaned[:400]

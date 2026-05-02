@@ -13,6 +13,22 @@ HARD_ESCALATION_TAGS = {
     "fraud",
 }
 
+# `payment_failure` is a hard-escalate for Visa (genuine card decline / fraud
+# signal) and for unrouted tickets, but for HackerRank/Claude it usually means
+# "checkout question" or "subscription billing query" — not an emergency.
+# Keep the conservative full set as the default; scope down for the soft domains.
+DOMAIN_SCOPED_HARD: dict[str, set[str]] = {
+    "visa":       {"fraud", "account_compromise", "legal", "exam_integrity", "payment_failure"},
+    "claude":     {"fraud", "account_compromise", "legal", "exam_integrity"},
+    "hackerrank": {"fraud", "account_compromise", "legal", "exam_integrity"},
+    "none":       HARD_ESCALATION_TAGS,
+}
+
+
+def _hard_set_for(hits: list[WikiHit]) -> set[str]:
+    domain = (hits[0].domain.lower() if hits else "none")
+    return DOMAIN_SCOPED_HARD.get(domain, HARD_ESCALATION_TAGS)
+
 THREAT_RE = re.compile(
     r"\b(legal\s+action|sue|lawsuit|regulator|attorney|press|news|"
     r"defamation|escalat\w+\s+to\s+(legal|management)|threaten)\b",
@@ -71,7 +87,8 @@ def decide(
             reasons=["PII detected - never echo and never auto-resolve"],
         )
 
-    risk_hit = [t for t in classification.risk_tags if t in HARD_ESCALATION_TAGS]
+    hard_set = _hard_set_for(hits)
+    risk_hit = [t for t in classification.risk_tags if t in hard_set]
     if risk_hit:
         return EscalationDecision(
             status="escalated",
